@@ -1,0 +1,210 @@
+---
+title: "Superficie sembrada y cosechada por campaña"
+lang: es
+format:
+  html:
+    embed-resources: true
+    toc: true
+    number-sections: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## Objetivo
+
+Este informe describe la evolución de la superficie sembrada y cosechada de
+Girasol, Maíz, Soja total y Trigo total. Los gráficos comparan ambas superficies
+en hectáreas a lo largo de las campañas disponibles.
+
+## Datos y metodología
+
+La fuente es `Rendimientos_decada.xlsx`, en la hoja `rendimiento`. Cada registro
+corresponde a una observación geográfica. Para comparar las campañas, se suman
+las superficies por cultivo y campaña.
+
+Las celdas vacías y los valores `NA`, `N/A` y `SD` se tratan como faltantes, no
+como cero. Cuando una campaña tiene observaciones válidas y faltantes, se suman
+las observaciones disponibles; si todas faltan, el total queda sin dato. Los
+gráficos dejan un corte en las series cuando no hay un total disponible.
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(knitr)
+
+archivo <- "Rendimientos_decada.xlsx"
+
+if (!file.exists(archivo)) {
+  stop("No se encontró Rendimientos_decada.xlsx junto a este documento.")
+}
+
+rendimientos <- read_excel(
+  archivo,
+  sheet = "rendimiento",
+  na = c("", "NA", "N/A", "SD")
+)
+
+columnas_requeridas <- c(
+  "Cultivo", "Campaña", "Sup. Sembrada", "Sup. Cosechada"
+)
+faltan_columnas <- setdiff(columnas_requeridas, names(rendimientos))
+
+if (length(faltan_columnas) > 0) {
+  stop(
+    "Faltan columnas requeridas: ",
+    paste(faltan_columnas, collapse = ", ")
+  )
+}
+
+rendimientos <- rendimientos %>%
+  filter(!is.na(Cultivo), !is.na(Campaña))
+
+faltantes_sembrada <- sum(is.na(rendimientos[["Sup. Sembrada"]]))
+faltantes_cosechada <- sum(is.na(rendimientos[["Sup. Cosechada"]]))
+
+cultivos <- sort(unique(rendimientos$Cultivo))
+campanias <- unique(as.character(rendimientos$Campaña))
+
+sumar_disponibles <- function(x) {
+  if (all(is.na(x))) NA_real_ else sum(x, na.rm = TRUE)
+}
+
+datos_campania <- rendimientos %>%
+  group_by(Cultivo, Campaña) %>%
+  summarise(
+    `Sup. Sembrada` = sumar_disponibles(`Sup. Sembrada`),
+    `Sup. Cosechada` = sumar_disponibles(`Sup. Cosechada`),
+    .groups = "drop"
+  ) %>%
+  mutate(Campaña = factor(as.character(Campaña), levels = campanias)) %>%
+  complete(
+    Cultivo,
+    Campaña = factor(campanias, levels = campanias)
+  ) %>%
+  arrange(Cultivo, Campaña)
+
+resumen <- datos_campania %>%
+  group_by(Cultivo) %>%
+  summarise(
+    `Campañas con datos` = sum(
+      !is.na(`Sup. Sembrada`) | !is.na(`Sup. Cosechada`)
+    ),
+    `Promedio sembrada (ha)` = mean(`Sup. Sembrada`, na.rm = TRUE),
+    `Promedio cosechada (ha)` = mean(`Sup. Cosechada`, na.rm = TRUE),
+    `Máxima cosechada (ha)` = max(`Sup. Cosechada`, na.rm = TRUE),
+    `Campaña de máxima cosecha` = as.character(
+      Campaña[which.max(replace_na(`Sup. Cosechada`, -Inf))]
+    ),
+    .groups = "drop"
+  )
+
+cultivo_mayor_sembrada <- resumen$Cultivo[
+  which.max(resumen[["Promedio sembrada (ha)"]])
+]
+cultivo_mayor_cosecha <- resumen$Cultivo[
+  which.max(resumen[["Máxima cosechada (ha)"]])
+]
+campania_mayor_cosecha <- resumen[["Campaña de máxima cosecha"]][
+  which.max(resumen[["Máxima cosechada (ha)"]])
+]
+
+grafico_cultivo <- function(nombre_cultivo) {
+  datos_grafico <- datos_campania %>%
+    filter(Cultivo == nombre_cultivo) %>%
+    pivot_longer(
+      cols = c(`Sup. Sembrada`, `Sup. Cosechada`),
+      names_to = "Superficie",
+      values_to = "Hectáreas"
+    ) %>%
+    group_by(Superficie) %>%
+    mutate(Segmento = cumsum(is.na(Hectáreas))) %>%
+    ungroup()
+
+  ggplot(
+    datos_grafico,
+    aes(
+      x = Campaña,
+      y = Hectáreas,
+      color = Superficie,
+      group = interaction(Superficie, Segmento)
+    )
+  ) +
+    geom_line(na.rm = TRUE) +
+    geom_point(na.rm = TRUE, size = 1.5) +
+    scale_x_discrete(
+      breaks = campanias[seq(1, length(campanias), by = 5)]
+    ) +
+    scale_y_continuous(
+      labels = label_number(big.mark = ".", decimal.mark = ",", accuracy = 1)
+    ) +
+    scale_color_manual(
+      values = c("Sup. Sembrada" = "#2878B5", "Sup. Cosechada" = "#E07A2D")
+    ) +
+    labs(
+      x = "Campaña",
+      y = "Superficie (hectáreas)",
+      color = NULL
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "top"
+    )
+}
+```
+
+La base incluye `r format(nrow(rendimientos), big.mark = ".", decimal.mark = ",")`
+registros en `r length(campanias)` campañas, desde
+`r campanias[1]` hasta `r tail(campanias, 1)`. Se identifican
+`r length(cultivos)` cultivos.
+
+En los registros de origen hay `r faltantes_sembrada` valores faltantes de
+superficie sembrada y `r faltantes_cosechada` de superficie cosechada.
+
+## Resumen por cultivo
+
+La tabla presenta promedios de los totales por campaña. La campaña de máxima
+cosecha se calcula entre aquellas con superficie cosechada disponible.
+
+```{r}
+kable(
+  resumen,
+  digits = 0,
+  format.args = list(big.mark = ".", decimal.mark = ","),
+  caption = "Superficie agregada y promedio por campaña"
+)
+```
+
+En promedio, **`r cultivo_mayor_sembrada`**
+presenta la mayor superficie sembrada por campaña. La cosecha máxima del período
+se observa en **`r cultivo_mayor_cosecha`**, durante la campaña
+**`r campania_mayor_cosecha`**.
+
+## Girasol
+
+```{r}
+grafico_cultivo("Girasol")
+```
+
+## Maíz
+
+```{r}
+grafico_cultivo("Maíz")
+```
+
+## Soja total
+
+```{r}
+grafico_cultivo("Soja total")
+```
+
+## Trigo total
+
+```{r}
+grafico_cultivo("Trigo total")
+```
